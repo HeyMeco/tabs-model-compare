@@ -15,9 +15,9 @@ A web-based tool for comparing LLM-generated responses with reference data, spec
 > [!NOTE]  
 > You should install UV from Astral to easily setup the environment: https://docs.astral.sh/uv/getting-started/installation/.
 
-1. Make sure you're in the evaluation-mini directory:
+1. Clone this project and switch to that directory
 ```bash
-cd source/evaluation/evaluation-mini
+git clone https://github.com/HeyMeco/tabs-model-compare.git && cd ./tabs-model-compare
 ```
 
 2. Create and activate a virtual environment (optional but recommended):
