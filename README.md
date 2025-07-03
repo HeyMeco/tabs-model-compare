@@ -12,6 +12,9 @@ A web-based tool for comparing LLM-generated responses with reference data, spec
 
 ## Setup
 
+> [!NOTE]  
+> You should install UV from Astral to easily setup the environment: https://docs.astral.sh/uv/getting-started/installation/.
+
 1. Make sure you're in the evaluation-mini directory:
 ```bash
 cd source/evaluation/evaluation-mini
@@ -19,18 +22,18 @@ cd source/evaluation/evaluation-mini
 
 2. Create and activate a virtual environment (optional but recommended):
 ```bash
-python -m venv .venv
+uv venv --python 3.12
 source .venv/bin/activate  # On Windows use: .venv\Scripts\activate
 ```
 
 3. Install the required dependencies:
 ```bash
-pip install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 
 4. Run the Flask application:
 ```bash
-python app.py
+uv run app.py
 ```
 
 5. Open your browser and navigate to `http://localhost:5000`
