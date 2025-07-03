@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Response Comparison</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+    <style>
+        .response-card {
+            margin-bottom: 1rem;
+        }
+        .aspect-row {
+            margin-bottom: 1rem;
+            padding: 1rem;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+        }
+        .aspect-header {
+            background-color: #f8f9fa;
+            padding: 0.5rem;
+            margin-bottom: 1rem;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+        .aspect-content {
+            margin-bottom: 1rem;
+        }
+        .comment-section {
+            margin-top: 0.5rem;
+        }
+        .existing-comments {
+            max-height: 150px;
+            overflow-y: auto;
+            padding: 0.5rem;
+            background-color: #f8f9fa;
+            border-radius: 4px;
+        }
+        .aspect-label {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            margin-right: 0.5rem;
+            font-weight: bold;
+            color: white;
+        }
+        .comment-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #dee2e6;
+        }
+        .comment-text {
+            flex-grow: 1;
+            margin-right: 0.5rem;
+        }
+        .delete-comment {
+            color: #dc3545;
+            background: none;
+            border: none;
+            padding: 0 0.5rem;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        .delete-comment:hover {
+            color: #bd2130;
+        }
+        /* Dynamic aspect colors using HSL to ensure good distribution */
+        [data-aspect-color="0"] { background-color: hsl(0, 70%, 50%); }
+        [data-aspect-color="1"] { background-color: hsl(60, 70%, 50%); color: black; }
+        [data-aspect-color="2"] { background-color: hsl(120, 70%, 50%); }
+        [data-aspect-color="3"] { background-color: hsl(180, 70%, 50%); }
+        [data-aspect-color="4"] { background-color: hsl(240, 70%, 50%); }
+        [data-aspect-color="5"] { background-color: hsl(300, 70%, 50%); }
+        [data-aspect-color="6"] { background-color: hsl(30, 70%, 50%); }
+        [data-aspect-color="7"] { background-color: hsl(90, 70%, 50%); }
+        [data-aspect-color="8"] { background-color: hsl(150, 70%, 50%); }
+        [data-aspect-color="9"] { background-color: hsl(210, 70%, 50%); }
+    </style>
+</head>
+<body>
+    <div class="container mt-4">
+        <h1 class="mb-4">LLM Response Comparison</h1>
+        
+        <!-- File Upload Form -->
+        <div class="card mb-4">
+            <div class="card-body">
+                <form id="uploadForm" class="row g-3">
+                    <div class="col-md-6">
+                        <label for="reference" class="form-label">Reference File (JSONL)</label>
+                        <input type="file" class="form-control" id="reference" accept=".jsonl" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="responses" class="form-label">Response Files (JSONL)</label>
+                        <input type="file" class="form-control" id="responses" accept=".jsonl" multiple required>
+                    </div>
+                    <div class="col-12">
+                        <button type="submit" class="btn btn-primary">Process Files</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Results Section -->
+        <div id="results"></div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Create a map to store aspect labels
+        const aspectLabels = new Map();
+
+        function getAspectLabel(aspect) {
+            // If we already have a label for this aspect, return it
+            if (aspectLabels.has(aspect)) {
+                return aspectLabels.get(aspect);
+            }
+
+            // Otherwise, generate a label based on the aspect code
+            const label = aspect.split('_')
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join(' ');
+            aspectLabels.set(aspect, label);
+            return label;
+        }
+
+        function getAspectColorIndex(aspect, totalAspects) {
+            // Get a consistent color index for this aspect
+            let hash = 0;
+            for (let i = 0; i < aspect.length; i++) {
+                hash = ((hash << 5) - hash) + aspect.charCodeAt(i);
+                hash = hash & hash; // Convert to 32-bit integer
+            }
+            return Math.abs(hash % 10); // Use 10 different colors
+        }
+
+        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const formData = new FormData();
+            formData.append('reference', document.getElementById('reference').files[0]);
+            
+            const responseFiles = document.getElementById('responses').files;
+            for (let file of responseFiles) {
+                formData.append('responses', file);
+            }
+
+            try {
+                const response = await fetch('/process', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+                displayResults(data);
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        });
+
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '';
+
+            // Get the ordered list of PMIDs
+            const pmidOrder = data.pmid_order || [];
+            
+            // Process PMIDs in order
+            for (const pmid of pmidOrder) {
+                const item = data[pmid];
+                if (!item) continue;  // Skip if PMID data is not found
+                
+                const pmidCard = document.createElement('div');
+                pmidCard.className = 'card mb-4';
+                
+                const cardHeader = document.createElement('div');
+                cardHeader.className = 'card-header d-flex justify-content-between align-items-center';
+                cardHeader.innerHTML = `
+                    <h5 class="mb-0">
+                        <button class="btn btn-link" type="button" data-bs-toggle="collapse" 
+                                data-bs-target="#collapse${pmid}">
+                            PMID: ${pmid}
+                        </button>
+                    </h5>
+                `;
+
+                const cardBody = document.createElement('div');
+                cardBody.id = `collapse${pmid}`;
+                cardBody.className = 'collapse';
+                
+                // Add event listener for collapse/expand
+                cardBody.addEventListener('show.bs.collapse', () => {
+                    // Load comments for all aspects and models in this PMID
+                    const aspects = item.aspects || [];
+                    const models = Object.keys(item.responses);
+                    
+                    aspects.forEach(aspect => {
+                        models.forEach(model => {
+                            loadComments(pmid, aspect, model);
+                        });
+                    });
+                });
+                
+                const content = document.createElement('div');
+                content.className = 'card-body';
+
+                // Get the ordered list of aspects for this PMID
+                const aspects = item.aspects || [];
+                
+                // Process each aspect in order
+                aspects.forEach(aspect => {
+                    const aspectRow = document.createElement('div');
+                    aspectRow.className = 'aspect-row';
+                    
+                    // Get color index for this aspect
+                    const colorIndex = getAspectColorIndex(aspect, aspects.length);
+                    
+                    // Add aspect header
+                    aspectRow.innerHTML = `
+                        <div class="aspect-header">
+                            <span class="aspect-label" data-aspect-color="${colorIndex}">${getAspectLabel(aspect)}</span>
+                        </div>
+                    `;
+
+                    // Reference section for this aspect
+                    const references = item.reference[aspect];
+                    if (references && references.length > 0) {
+                        let referenceContent = '<div class="mb-3"><h6>Reference:</h6>';
+                        references.forEach(ref => {
+                            referenceContent += `
+                                <div class="ms-3 mb-2">
+                                    <strong>Summary:</strong> ${ref.summary || 'N/A'}<br>
+                                    <strong>Key Points:</strong> ${ref.kps || 'N/A'}<br>
+                                    <strong>Subclaims:</strong> ${ref.subclaims || 'N/A'}
+                                </div>
+                            `;
+                        });
+                        referenceContent += '</div>';
+                        aspectRow.innerHTML += referenceContent;
+                    }
+
+                    // Responses section for this aspect
+                    const models = Object.keys(item.responses);
+                    if (models.length > 0) {
+                        let responsesContent = '<div class="row">';
+                        
+                        models.forEach(model => {
+                            const modelResponses = item.responses[model][aspect];
+                            responsesContent += `<div class="col-md-6 mb-3">
+                                <strong>${model}:</strong>`;
+                            
+                            if (modelResponses && modelResponses.length > 0) {
+                                modelResponses.forEach(response => {
+                                    responsesContent += `
+                                        <div class="aspect-content">
+                                            <div><strong>Summary:</strong> ${response.summary || 'N/A'}</div>
+                                            <div><strong>Key Points:</strong> ${response.kps || 'N/A'}</div>
+                                            <div><strong>Subclaims:</strong> ${response.subclaims || 'N/A'}</div>
+                                        </div>
+                                    `;
+                                });
+                            }
+
+                            // Add comment section
+                            responsesContent += `
+                                <div class="comment-section">
+                                    <textarea class="form-control mb-2" 
+                                            placeholder="Add comment..."
+                                            data-pmid="${pmid}"
+                                            data-aspect="${aspect}"
+                                            data-model="${model}"></textarea>
+                                    <button class="btn btn-sm btn-primary save-comment">Save Comment</button>
+                                    <div class="existing-comments mt-2" id="comments-${pmid}-${aspect}-${model}"></div>
+                                </div>
+                            </div>`;
+                        });
+                        
+                        responsesContent += '</div>';
+                        aspectRow.innerHTML += responsesContent;
+                    }
+
+                    content.appendChild(aspectRow);
+                });
+
+                cardBody.appendChild(content);
+                pmidCard.appendChild(cardHeader);
+                pmidCard.appendChild(cardBody);
+                resultsDiv.appendChild(pmidCard);
+            }
+
+            // Add event listeners for comment buttons
+            document.querySelectorAll('.save-comment').forEach(button => {
+                button.addEventListener('click', async (e) => {
+                    const textarea = e.target.previousElementSibling;
+                    const comment = textarea.value.trim();
+                    if (!comment) return;
+
+                    const data = {
+                        pmid: textarea.dataset.pmid,
+                        aspect: textarea.dataset.aspect,
+                        model: textarea.dataset.model,
+                        comment: comment
+                    };
+
+                    try {
+                        const response = await fetch('/comments', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
+                            },
+                            body: JSON.stringify(data)
+                        });
+                        
+                        if (response.ok) {
+                            textarea.value = '';
+                            loadComments(data.pmid, data.aspect, data.model);
+                        }
+                    } catch (error) {
+                        console.error('Error saving comment:', error);
+                    }
+                });
+            });
+        }
+
+        async function loadComments(pmid, aspect, model) {
+            try {
+                const response = await fetch(`/comments/${pmid}`);
+                const comments = await response.json();
+                
+                const filteredComments = comments.filter(c => 
+                    c.aspect === aspect && c.model === model
+                );
+                
+                const commentsDiv = document.getElementById(`comments-${pmid}-${aspect}-${model}`);
+                if (!commentsDiv) return; // Exit if the div doesn't exist (section not expanded)
+                
+                commentsDiv.innerHTML = filteredComments.map(comment => `
+                    <div class="comment-item">
+                        <div class="comment-text">${comment.comment}</div>
+                        <button class="delete-comment" data-comment-id="${comment.id}">&times;</button>
+                    </div>
+                `).join('');
+
+                // Add event listeners for delete buttons
+                commentsDiv.querySelectorAll('.delete-comment').forEach(button => {
+                    button.addEventListener('click', async () => {
+                        const commentId = button.dataset.commentId;
+                        try {
+                            const response = await fetch(`/comments/${commentId}`, {
+                                method: 'DELETE'
+                            });
+                            
+                            if (response.ok) {
+                                // Reload comments after successful deletion
+                                loadComments(pmid, aspect, model);
+                            } else {
+                                console.error('Failed to delete comment');
+                            }
+                        } catch (error) {
+                            console.error('Error deleting comment:', error);
+                        }
+                    });
+                });
+            } catch (error) {
+                console.error('Error loading comments:', error);
+            }
+        }
+    </script>
+</body>
+</html> 
