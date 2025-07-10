@@ -1263,14 +1263,23 @@
                 cardBody.className = 'collapse';
                 
                 // Add event listener for collapse/expand
-                cardBody.addEventListener('show.bs.collapse', () => {
-                    // Load comments for all aspects and models in this PMID
+                cardBody.addEventListener('show.bs.collapse', async () => {
+                    // Load all comments for this PMID once
+                    const allComments = await loadAllCommentsForPMID(pmid);
+                    
+                    // Distribute comments to all aspect-model combinations
                     const aspects = item.aspects || [];
                     const models = Object.keys(item.responses);
                     
                     aspects.forEach(aspect => {
                         models.forEach(model => {
-                            loadComments(pmid, aspect, model);
+                            // Filter comments for this specific aspect and model
+                            const comments = allComments.filter(c => 
+                                c.aspect === aspect && c.model === model
+                            );
+                            
+                            // Update the UI directly without making HTTP requests
+                            updateCommentsUI(pmid, aspect, model, comments);
                         });
                     });
                 });
@@ -1428,6 +1437,8 @@
                         }
                         
                         textarea.value = '';
+                        // Clear cache for this PMID to ensure fresh data is loaded
+                        commentsCache.delete(data.pmid);
                         loadComments(data.pmid, data.aspect, data.model);
                         
                     } catch (error) {
@@ -1438,34 +1449,36 @@
             });
         }
 
-        async function loadComments(pmid, aspect, model) {
+        // Cache for PMID comments to avoid multiple requests
+        const commentsCache = new Map();
+        
+        async function loadAllCommentsForPMID(pmid) {
+            // Check if we already have cached comments for this PMID
+            if (commentsCache.has(pmid)) {
+                return commentsCache.get(pmid);
+            }
+            
             try {
                 // Check if IndexedDB is supported
                 const supportsIndexedDB = await storage.checkSupport();
-                let comments = [];
+                let allComments = [];
                 
                 if (supportsIndexedDB) {
                     // Load from IndexedDB first
-                    const allComments = await storage.getCommentsByPmid(pmid);
-                    comments = allComments.filter(c => 
-                        c.aspect === aspect && c.model === model
-                    );
+                    allComments = await storage.getCommentsByPmid(pmid);
                     
                     // Try to sync with server for this PMID
                     try {
                         const response = await fetch(`/comments/${pmid}`);
                         if (response.ok) {
                             const serverComments = await response.json();
-                            const serverFiltered = serverComments.filter(c => 
-                                c.aspect === aspect && c.model === model
-                            );
                             
                             // Merge server comments with local ones
-                            const serverIds = new Set(serverFiltered.map(c => c.id));
-                            const localOnly = comments.filter(c => !serverIds.has(c.id));
+                            const serverIds = new Set(serverComments.map(c => c.id));
+                            const localOnly = allComments.filter(c => !serverIds.has(c.id));
                             
                             // Combine server comments with local-only comments
-                            comments = [...serverFiltered.map(c => ({...c, syncStatus: 'synced'})), ...localOnly];
+                            allComments = [...serverComments.map(c => ({...c, syncStatus: 'synced'})), ...localOnly];
                         }
                     } catch (error) {
                         console.log('Server not available, using local comments only');
@@ -1473,78 +1486,100 @@
                 } else {
                     // Fallback to server fetch
                     const response = await fetch(`/comments/${pmid}`);
-                    const allComments = await response.json();
-                    comments = allComments.filter(c => 
-                        c.aspect === aspect && c.model === model
-                    );
+                    allComments = await response.json();
                 }
                 
-                const commentsDiv = document.getElementById(`comments-${pmid}-${aspect}-${model}`);
-                if (!commentsDiv) return; // Exit if the div doesn't exist (section not expanded)
+                // Cache the result
+                commentsCache.set(pmid, allComments);
+                return allComments;
                 
-                commentsDiv.innerHTML = comments.map(comment => {
-                    let syncIndicator = '';
-                    if (comment.syncStatus === 'pending') {
-                        syncIndicator = '<span class="badge bg-warning text-dark ms-1" title="Pending sync">⏳</span>';
-                    } else if (comment.syncStatus === 'failed') {
-                        syncIndicator = '<span class="badge bg-danger ms-1" title="Failed to sync">⚠️</span>';
+            } catch (error) {
+                console.error('Error loading comments for PMID:', pmid, error);
+                return [];
+            }
+        }
+        
+        function updateCommentsUI(pmid, aspect, model, comments) {
+            const commentsDiv = document.getElementById(`comments-${pmid}-${aspect}-${model}`);
+            if (!commentsDiv) return; // Exit if the div doesn't exist (section not expanded)
+            
+            commentsDiv.innerHTML = comments.map(comment => {
+                let syncIndicator = '';
+                if (comment.syncStatus === 'pending') {
+                    syncIndicator = '<span class="badge bg-warning text-dark ms-1" title="Pending sync">⏳</span>';
+                } else if (comment.syncStatus === 'failed') {
+                    syncIndicator = '<span class="badge bg-danger ms-1" title="Failed to sync">⚠️</span>';
+                }
+                
+                return `
+                    <div class="comment-item">
+                        <div class="comment-text">${comment.comment} ${syncIndicator}</div>
+                        <button class="delete-comment" data-comment-id="${comment.id}">&times;</button>
+                    </div>
+                `;
+            }).join('');
+
+            // Add event listeners for delete buttons
+            commentsDiv.querySelectorAll('.delete-comment').forEach(button => {
+                button.addEventListener('click', async () => {
+                    if (!confirm('Are you sure you want to delete this comment?')) {
+                        return;
                     }
                     
-                    return `
-                        <div class="comment-item">
-                            <div class="comment-text">${comment.comment} ${syncIndicator}</div>
-                            <button class="delete-comment" data-comment-id="${comment.id}">&times;</button>
-                        </div>
-                    `;
-                }).join('');
-
-                // Add event listeners for delete buttons
-                commentsDiv.querySelectorAll('.delete-comment').forEach(button => {
-                    button.addEventListener('click', async () => {
-                        if (!confirm('Are you sure you want to delete this comment?')) {
-                            return;
-                        }
+                    const commentId = parseInt(button.dataset.commentId);
+                    try {
+                        // Check if IndexedDB is supported
+                        const supportsIndexedDB = await storage.checkSupport();
                         
-                        const commentId = parseInt(button.dataset.commentId);
-                        try {
-                            // Check if IndexedDB is supported
-                            const supportsIndexedDB = await storage.checkSupport();
+                        if (supportsIndexedDB) {
+                            // Delete from IndexedDB first
+                            await storage.deleteComment(commentId);
                             
-                            if (supportsIndexedDB) {
-                                // Delete from IndexedDB first
-                                await storage.deleteComment(commentId);
-                                
-                                // Try to delete from server
-                                try {
-                                    const response = await fetch(`/comments/${commentId}`, {
-                                        method: 'DELETE'
-                                    });
-                                    if (!response.ok) {
-                                        console.log('Server delete failed, but local delete succeeded');
-                                    }
-                                } catch (error) {
-                                    console.log('Server not available, deleted locally only');
-                                }
-                            } else {
-                                // Fallback to server delete
+                            // Try to delete from server
+                            try {
                                 const response = await fetch(`/comments/${commentId}`, {
                                     method: 'DELETE'
                                 });
-                                
                                 if (!response.ok) {
-                                    throw new Error('Failed to delete comment');
+                                    console.log('Server delete failed, but local delete succeeded');
                                 }
+                            } catch (error) {
+                                console.log('Server not available, deleted locally only');
                             }
+                        } else {
+                            // Fallback to server delete
+                            const response = await fetch(`/comments/${commentId}`, {
+                                method: 'DELETE'
+                            });
                             
-                            // Reload comments after successful deletion
-                            loadComments(pmid, aspect, model);
-                            
-                        } catch (error) {
-                            console.error('Error deleting comment:', error);
-                            alert('Error deleting comment. Please try again.');
+                            if (!response.ok) {
+                                throw new Error('Failed to delete comment');
+                            }
                         }
-                    });
+                        
+                        // Clear cache for this PMID and reload
+                        commentsCache.delete(pmid);
+                        loadComments(pmid, aspect, model);
+                        
+                    } catch (error) {
+                        console.error('Error deleting comment:', error);
+                        alert('Error deleting comment. Please try again.');
+                    }
                 });
+            });
+        }
+        
+        async function loadComments(pmid, aspect, model) {
+            try {
+                // Get all comments for this PMID (cached if available)
+                const allComments = await loadAllCommentsForPMID(pmid);
+                
+                // Filter for specific aspect and model
+                const comments = allComments.filter(c => 
+                    c.aspect === aspect && c.model === model
+                );
+                
+                updateCommentsUI(pmid, aspect, model, comments);
             } catch (error) {
                 console.error('Error loading comments:', error);
             }
