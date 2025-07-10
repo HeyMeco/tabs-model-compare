@@ -35,6 +35,29 @@ def read_jsonl(file_path):
 def index():
     return render_template('index.html')
 
+@app.route('/review')
+def review():
+    return render_template('review.html')
+
+@app.route('/api/comments/by-model', methods=['GET'])
+def get_comments_by_model():
+    """Get all comments grouped by model for the review page"""
+    comments = Comment.query.all()
+    
+    # Group comments by model
+    comments_by_model = {}
+    for comment in comments:
+        model = comment.model
+        if model not in comments_by_model:
+            comments_by_model[model] = []
+        comments_by_model[model].append(comment.to_dict())
+    
+    # Sort comments within each model by pmid and aspect
+    for model in comments_by_model:
+        comments_by_model[model].sort(key=lambda x: (x['pmid'], x['aspect']))
+    
+    return jsonify(comments_by_model)
+
 @app.route('/process', methods=['POST'])
 def process():
     reference_file = request.files.get('reference')

@@ -66,6 +66,11 @@
         .delete-comment:hover {
             color: #bd2130;
         }
+        .nav-tabs .nav-link.active {
+            background-color: #007bff;
+            border-color: #007bff;
+            color: white;
+        }
         /* Dynamic aspect colors using HSL to ensure good distribution */
         [data-aspect-color="0"] { background-color: hsl(0, 70%, 50%); }
         [data-aspect-color="1"] { background-color: hsl(60, 70%, 50%); color: black; }
@@ -81,6 +86,22 @@
 </head>
 <body>
     <div class="container mt-4">
+        <!-- Navigation -->
+        <nav class="mb-4">
+            <ul class="nav nav-tabs">
+                <li class="nav-item">
+                    <a class="nav-link active" href="/">
+                        <i class="bi bi-chat-left-text"></i> Comment
+                    </a>
+                </li>
+                <li class="nav-item">
+                    <a class="nav-link" href="/review">
+                        <i class="bi bi-eye"></i> Review
+                    </a>
+                </li>
+            </ul>
+        </nav>
+
         <h1 class="mb-4">LLM Response Comparison</h1>
         
         <!-- File Upload Form -->
@@ -135,32 +156,289 @@
             return Math.abs(hash % 10); // Use 10 different colors
         }
 
-        document.getElementById('uploadForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            const formData = new FormData();
-            formData.append('reference', document.getElementById('reference').files[0]);
-            
-            const responseFiles = document.getElementById('responses').files;
-            for (let file of responseFiles) {
-                formData.append('responses', file);
+        // IndexedDB Database Management
+        class DataStorage {
+            constructor() {
+                this.dbName = 'LLMComparisonDB';
+                this.version = 1;
+                this.storeName = 'processedData';
             }
 
-            try {
-                const response = await fetch('/process', {
-                    method: 'POST',
-                    body: formData
+            async initDB() {
+                return new Promise((resolve, reject) => {
+                    const request = indexedDB.open(this.dbName, this.version);
+                    
+                    request.onerror = () => reject(request.error);
+                    request.onsuccess = () => resolve(request.result);
+                    
+                    request.onupgradeneeded = (event) => {
+                        const db = event.target.result;
+                        if (!db.objectStoreNames.contains(this.storeName)) {
+                            db.createObjectStore(this.storeName, { keyPath: 'id' });
+                        }
+                    };
                 });
-                const data = await response.json();
-                displayResults(data);
-            } catch (error) {
-                console.error('Error:', error);
             }
-        });
+
+            async saveData(data) {
+                try {
+                    const db = await this.initDB();
+                    const transaction = db.transaction([this.storeName], 'readwrite');
+                    const store = transaction.objectStore(this.storeName);
+                    
+                    const dataToStore = {
+                        id: 'currentSession',
+                        data: data,
+                        timestamp: Date.now(),
+                        version: '1.0'
+                    };
+                    
+                    const sizeInBytes = new Blob([JSON.stringify(dataToStore)]).size;
+                    console.log(`Data size: ${(sizeInBytes / 1024 / 1024).toFixed(2)} MB`);
+                    
+                    await new Promise((resolve, reject) => {
+                        const request = store.put(dataToStore);
+                        request.onsuccess = () => resolve();
+                        request.onerror = () => reject(request.error);
+                    });
+                    
+                    console.log('Data successfully saved to IndexedDB');
+                    return true;
+                } catch (error) {
+                    console.error('Error saving to IndexedDB:', error);
+                    throw error;
+                }
+            }
+
+            async loadData() {
+                try {
+                    const db = await this.initDB();
+                    const transaction = db.transaction([this.storeName], 'readonly');
+                    const store = transaction.objectStore(this.storeName);
+                    
+                    const result = await new Promise((resolve, reject) => {
+                        const request = store.get('currentSession');
+                        request.onsuccess = () => resolve(request.result);
+                        request.onerror = () => reject(request.error);
+                    });
+                    
+                    if (result && result.data) {
+                        console.log('Data loaded from IndexedDB, version:', result.version);
+                        console.log('Data timestamp:', new Date(result.timestamp));
+                        return result.data;
+                    }
+                    
+                    return null;
+                } catch (error) {
+                    console.error('Error loading from IndexedDB:', error);
+                    return null;
+                }
+            }
+
+            async clearData() {
+                try {
+                    const db = await this.initDB();
+                    const transaction = db.transaction([this.storeName], 'readwrite');
+                    const store = transaction.objectStore(this.storeName);
+                    
+                    await new Promise((resolve, reject) => {
+                        const request = store.delete('currentSession');
+                        request.onsuccess = () => resolve();
+                        request.onerror = () => reject(request.error);
+                    });
+                    
+                    console.log('Data cleared from IndexedDB');
+                } catch (error) {
+                    console.error('Error clearing IndexedDB:', error);
+                }
+            }
+
+            async checkSupport() {
+                return 'indexedDB' in window;
+            }
+        }
+
+        // Create storage instance
+        const storage = new DataStorage();
+
+        async function saveDataToStorage(data) {
+            try {
+                await storage.saveData(data);
+                return true;
+            } catch (error) {
+                console.error('Failed to save data:', error);
+                throw error;
+            }
+        }
+
+        async function loadDataFromStorage() {
+            try {
+                return await storage.loadData();
+            } catch (error) {
+                console.error('Failed to load data:', error);
+                return null;
+            }
+        }
+
+        async function clearStoredData() {
+            try {
+                await storage.clearData();
+                // Also clear any legacy localStorage data
+                localStorage.removeItem('processedData');
+                localStorage.removeItem('dataVersion');
+            } catch (error) {
+                console.error('Failed to clear data:', error);
+            }
+        }
+
+        function attachFormListener() {
+            const form = document.getElementById('uploadForm');
+            if (!form) {
+                console.error('Upload form not found!');
+                return;
+            }
+            
+            console.log('Attaching form listener...');
+            
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                console.log('Form submitted!');
+                
+                // Validate files are selected
+                const referenceFile = document.getElementById('reference').files[0];
+                const responseFiles = document.getElementById('responses').files;
+                
+                console.log('Reference file:', referenceFile);
+                console.log('Response files:', responseFiles);
+                
+                if (!referenceFile || responseFiles.length === 0) {
+                    alert('Please select both reference and response files.');
+                    return;
+                }
+                
+                // Show loading state
+                const submitButton = e.target.querySelector('button[type="submit"]');
+                const originalText = submitButton.innerHTML;
+                submitButton.innerHTML = '<span class="spinner-border spinner-border-sm" role="status"></span> Processing...';
+                submitButton.disabled = true;
+                
+                const formData = new FormData();
+                formData.append('reference', referenceFile);
+                
+                for (let file of responseFiles) {
+                    formData.append('responses', file);
+                }
+
+                try {
+                    const response = await fetch('/process', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Try to save processed data to IndexedDB
+                    const supportsIndexedDB = await storage.checkSupport();
+                    if (supportsIndexedDB) {
+                        try {
+                            await saveDataToStorage(data);
+                            window.dataStorageMode = 'indexedDB';
+                            console.log('Data saved successfully to IndexedDB');
+                            
+                            // Show success message
+                            const successDiv = document.createElement('div');
+                            successDiv.className = 'alert alert-success alert-dismissible fade show mt-3';
+                            successDiv.innerHTML = `
+                                <i class="bi bi-database-check"></i>
+                                <strong>Data Saved:</strong> Your data has been saved to browser storage. 
+                                Navigation between tabs will work seamlessly.
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            `;
+                            
+                            setTimeout(() => {
+                                const resultsDiv = document.getElementById('results');
+                                resultsDiv.insertBefore(successDiv, resultsDiv.firstChild);
+                            }, 100);
+                            
+                        } catch (storageError) {
+                            console.warn('Could not save data to IndexedDB:', storageError);
+                            // Store in session memory as fallback
+                            window.sessionData = data;
+                            window.dataStorageMode = 'session';
+                            
+                            // Show warning to user
+                            const warningDiv = document.createElement('div');
+                            warningDiv.className = 'alert alert-warning alert-dismissible fade show mt-3';
+                            warningDiv.innerHTML = `
+                                <i class="bi bi-exclamation-triangle"></i>
+                                <strong>Storage Warning:</strong> Could not save data to browser storage. 
+                                Navigation between tabs will work in this session, but you'll need to re-upload files if you refresh the page.
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            `;
+                            
+                            setTimeout(() => {
+                                const resultsDiv = document.getElementById('results');
+                                resultsDiv.insertBefore(warningDiv, resultsDiv.firstChild);
+                            }, 100);
+                        }
+                    } else {
+                        // Store in session memory if IndexedDB not supported
+                        window.sessionData = data;
+                        window.dataStorageMode = 'session';
+                        console.log('IndexedDB not supported, using session storage');
+                    }
+                    
+                    displayResults(data);
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert('Error processing files. Please check the console for details.');
+                } finally {
+                    // Reset button state
+                    submitButton.innerHTML = originalText;
+                    submitButton.disabled = false;
+                }
+            });
+        }
 
         function displayResults(data) {
             const resultsDiv = document.getElementById('results');
             resultsDiv.innerHTML = '';
+
+            // Add a reset button to start over with new files
+            const resetButton = document.createElement('div');
+            resetButton.className = 'mb-3 text-end';
+            resetButton.innerHTML = `
+                <button type="button" class="btn btn-outline-secondary btn-sm" id="resetButton">
+                    <i class="bi bi-arrow-clockwise"></i> Upload New Files
+                </button>
+            `;
+            resultsDiv.appendChild(resetButton);
+
+            // Add event listener for reset button
+            document.getElementById('resetButton').addEventListener('click', async () => {
+                if (confirm('This will clear all current data and comments. Are you sure?')) {
+                    await clearStoredData();
+                    window.sessionData = null;
+                    window.dataStorageMode = null;
+                    resultsDiv.innerHTML = '';
+                    const uploadForm = document.querySelector('.card.mb-4');
+                    if (uploadForm) {
+                        uploadForm.style.display = 'block';
+                    }
+                    // Reattach form listener since form is now visible
+                    attachFormListener();
+                }
+            });
+
+            // Hide the upload form since we have processed data
+            const uploadForm = document.querySelector('.card.mb-4');
+            if (uploadForm) {
+                uploadForm.style.display = 'none';
+            }
 
             // Get the ordered list of PMIDs
             const pmidOrder = data.pmid_order || [];
@@ -365,6 +643,138 @@
                 console.error('Error loading comments:', error);
             }
         }
+
+        // Handle URL parameters from Review page navigation
+        function handleURLParameters() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const pmid = urlParams.get('pmid');
+            const aspect = urlParams.get('aspect');
+            const model = urlParams.get('model');
+            
+            if (pmid && aspect && model) {
+                // Wait for the data to be loaded, then expand and scroll
+                setTimeout(() => {
+                    expandAndScrollToComment(pmid, aspect, model);
+                    // Clean up URL parameters
+                    const newUrl = window.location.protocol + "//" + window.location.host + window.location.pathname;
+                    window.history.replaceState({path: newUrl}, '', newUrl);
+                }, 1000);
+            }
+        }
+
+        function expandAndScrollToComment(pmid, aspect, model) {
+            // Find and expand the PMID section
+            const collapseElement = document.getElementById(`collapse${pmid}`);
+            if (collapseElement) {
+                // Expand the collapse section
+                const bsCollapse = new bootstrap.Collapse(collapseElement, {
+                    show: true
+                });
+                
+                // Wait for expansion animation, then scroll to comment section
+                setTimeout(() => {
+                    const commentSection = document.getElementById(`comments-${pmid}-${aspect}-${model}`);
+                    if (commentSection) {
+                        // Scroll to the comment section
+                        commentSection.scrollIntoView({ 
+                            behavior: 'smooth', 
+                            block: 'center' 
+                        });
+                        
+                        // Highlight the comment section temporarily
+                        const parentCard = commentSection.closest('.col-md-6');
+                        if (parentCard) {
+                            parentCard.style.backgroundColor = '#fff3cd';
+                            parentCard.style.border = '2px solid #ffc107';
+                            parentCard.style.borderRadius = '0.375rem';
+                            
+                            // Remove highlight after 3 seconds
+                            setTimeout(() => {
+                                parentCard.style.backgroundColor = '';
+                                parentCard.style.border = '';
+                                parentCard.style.borderRadius = '';
+                            }, 3000);
+                        }
+                    }
+                }, 500);
+            }
+        }
+
+        // Check for saved data and URL parameters when page loads
+        document.addEventListener('DOMContentLoaded', async () => {
+            console.log('Page loaded, checking for saved data...');
+            
+            // Check IndexedDB support
+            const supportsIndexedDB = await storage.checkSupport();
+            if (!supportsIndexedDB) {
+                console.warn('IndexedDB not supported, falling back to session storage');
+                const warningDiv = document.createElement('div');
+                warningDiv.className = 'alert alert-warning';
+                warningDiv.innerHTML = `
+                    <i class="bi bi-exclamation-triangle"></i>
+                    <strong>Limited Storage:</strong> Your browser doesn't support IndexedDB. Data will only persist during this session.
+                `;
+                document.querySelector('.container').insertBefore(warningDiv, document.querySelector('.container').firstChild);
+            }
+            
+            // Attach form listener first
+            attachFormListener();
+            
+            // Check for saved processed data (IndexedDB first, then session fallback)
+            let savedData = null;
+            if (supportsIndexedDB) {
+                savedData = await loadDataFromStorage();
+            }
+            
+            if (!savedData && window.sessionData) {
+                console.log('Found session data, using fallback...');
+                savedData = window.sessionData;
+                window.dataStorageMode = 'session';
+            }
+            
+            if (savedData) {
+                console.log('Found saved data, restoring...');
+                displayResults(savedData);
+                
+                // Hide the upload form since we have processed data
+                const uploadForm = document.querySelector('.card.mb-4');
+                if (uploadForm) {
+                    uploadForm.style.display = 'none';
+                }
+                
+                // Show appropriate status message
+                if (window.dataStorageMode === 'session') {
+                    const warningDiv = document.createElement('div');
+                    warningDiv.className = 'alert alert-info alert-dismissible fade show mt-3';
+                    warningDiv.innerHTML = `
+                        <i class="bi bi-info-circle"></i>
+                        <strong>Session Mode:</strong> Data loaded from session memory. 
+                        Navigation between tabs works, but data will be lost on page refresh.
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    `;
+                    
+                    const resultsDiv = document.getElementById('results');
+                    resultsDiv.insertBefore(warningDiv, resultsDiv.firstChild);
+                } else {
+                    window.dataStorageMode = 'indexedDB';
+                    const successDiv = document.createElement('div');
+                    successDiv.className = 'alert alert-success alert-dismissible fade show mt-3';
+                    successDiv.innerHTML = `
+                        <i class="bi bi-database"></i>
+                        <strong>Data Restored:</strong> Your data has been loaded from browser storage. 
+                        Navigation between tabs will work seamlessly.
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    `;
+                    
+                    const resultsDiv = document.getElementById('results');
+                    resultsDiv.insertBefore(successDiv, resultsDiv.firstChild);
+                }
+            } else {
+                console.log('No saved data found, showing upload form');
+            }
+            
+            handleURLParameters();
+        });
     </script>
 </body>
 </html> 
