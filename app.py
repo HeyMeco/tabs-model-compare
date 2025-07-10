@@ -35,10 +35,6 @@ def read_jsonl(file_path):
 def index():
     return render_template('index.html')
 
-@app.route('/review')
-def review():
-    return render_template('review.html')
-
 @app.route('/api/comments/by-model', methods=['GET'])
 def get_comments_by_model():
     """Get all comments grouped by model for the review page"""
